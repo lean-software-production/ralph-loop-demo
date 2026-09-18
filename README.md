@@ -1,7 +1,7 @@
 # ralph-loop-demo
 
-This repo is a short tutorial on the most basic software factory: a **Ralph 
-loop**. It runs a coding agent unattended, in a fixed-size loop, so it builds 
+This repo is a short tutorial on the most basic software factory: a **[Ralph 
+loop](https://ghuntley.com/ralph/)**. It runs a coding agent unattended, in a fixed-size loop, so it builds 
 a project from a spec one task at a time, autonomously.
 
 ## Getting started
