@@ -1,0 +1,41 @@
+#!/bin/sh
+# One-time setup after cloning. Run it with: ./setup
+# It only verifies that pi is installed and that `pi -p ping` answers "pong".
+# It is plain shell on purpose: it must work before anything else is installed.
+set -e
+cd "$(dirname "$0")"
+
+if [ -t 1 ] && [ -z "$NO_COLOR" ] && [ "$TERM" != "dumb" ]; then
+  green='\033[32m'; red='\033[31m'; bold='\033[1m'; reset='\033[0m'
+else
+  green=''; red=''; bold=''; reset=''
+fi
+
+pass() { printf "  ${green}✓ ok${reset}       %s\n" "$1"; }
+fail() { printf "  ${red}✗ MISSING${reset}  %s\n" "$1"; echo; echo "Fix that, then run ./setup again."; exit 1; }
+
+if command -v pi >/dev/null 2>&1; then
+  pass "pi $(pi --version)"
+else
+  fail "pi - install it from https://pi.dev"
+fi
+
+if [ "$(pi -p ping)" = "pong" ]; then
+  pass "pi -p ping"
+else
+  fail "pi answered \`pi -p ping\` with something other than \"pong\""
+fi
+
+if command -v node >/dev/null 2>&1; then
+  pass "node $(node -v)"
+else
+  fail "node - install it from https://nodejs.org"
+fi
+
+if command -v npm >/dev/null 2>&1; then
+  pass "npm $(npm -v)"
+else
+  fail "npm - install it with node from https://nodejs.org"
+fi
+
+printf "\n${green}${bold}All good.${reset} Run ./ralph.sh to start.\n"
