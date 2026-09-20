@@ -23,7 +23,7 @@ credential file to this repository.
 pi
 
 # Claude Code: follow the interactive browser sign-in.
-claude
+claude auth login
 
 # Codex: the device flow works in Codespaces and remote containers.
 codex login --device-auth

@@ -87,45 +87,53 @@ else
   fail "ralph.sh and bin/run-agent must be executable"
 fi
 
-agent_requested() {
-  [ "$selected" = all-default ] || [ "$selected" = all ] || [ "$selected" = "$1" ]
-}
-
 record_configured() { configured_agents="${configured_agents} $1"; }
 
 check_pi() {
   if ! command -v pi >/dev/null 2>&1; then
-    if agent_requested pi; then warn "pi is not installed. Rebuild the Dev Container or install Pi."; fi
+    fail "pi is missing. Rebuild the Dev Container; this repository requires all three agent CLIs."
     return
   fi
   pass "pi installed ($(pi --version 2>/dev/null || echo version-unavailable))"
-  if [ -r "$HOME/.pi/agent/auth.json" ]; then
-    pass "pi configuration detected (credential file present; contents not read)"
+  local provider provider_found=0 ready=0
+  while IFS= read -r provider; do
+    [ -n "$provider" ] || continue
+    provider_found=1
+    if pi auth check --provider "$provider" --json --no-refresh >/dev/null 2>&1; then
+      pass "pi authentication verified for provider $provider"
+      ready=1
+    else
+      warn "pi provider $provider is not ready (stale, invalid, or unavailable); run pi and /login."
+    fi
+  done < <(pi_provider_candidates)
+  if [ "$provider_found" -eq 0 ]; then
+    warn "pi has no safely discoverable provider selection. Run pi and /login, then choose a model."
+  elif [ "$ready" -eq 1 ]; then
     record_configured pi
   else
-    warn "pi is not configured. Run pi, then /login, as this user."
+    warn "pi is not configured with a usable provider. Run pi and /login."
   fi
-  warn "pi model/default: not queried; confirm it in Pi's interactive model picker."
+  pi_report_default_selection
 }
 
 check_claude() {
   if ! command -v claude >/dev/null 2>&1; then
-    if agent_requested claude; then warn "claude is not installed. Rebuild the Dev Container or install Claude Code."; fi
+    fail "claude is missing. Rebuild the Dev Container; this repository requires all three agent CLIs."
     return
   fi
   pass "claude installed ($(claude --version 2>/dev/null || echo version-unavailable))"
-  if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -r "$HOME/.claude.json" ]; then
-    pass "claude configuration detected (credential value not read)"
+  if claude auth status >/dev/null 2>&1; then
+    pass "claude authentication verified with claude auth status"
     record_configured claude
   else
-    warn "claude is not configured. Run claude and complete sign-in as this user."
+    warn "claude is not configured or its authentication is not usable. Run claude auth login as this user."
   fi
   warn "claude model/default: not queried; no repository model is configured."
 }
 
 check_codex() {
   if ! command -v codex >/dev/null 2>&1; then
-    if agent_requested codex; then warn "codex is not installed. Rebuild the Dev Container or install Codex."; fi
+    fail "codex is missing. Rebuild the Dev Container; this repository requires all three agent CLIs."
     return
   fi
   pass "codex installed ($(codex --version 2>/dev/null || echo version-unavailable))"
@@ -138,6 +146,52 @@ check_codex() {
     warn "codex is not configured. Run codex login --device-auth in a remote container."
   fi
   warn "codex model/default: not queried; no repository model is configured."
+}
+
+# Read only identifier fields. Never emit a credential value or inspect one.
+pi_provider_candidates() {
+  if [[ "${PI_PROVIDER:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then printf '%s\n' "$PI_PROVIDER"; fi
+  command -v node >/dev/null 2>&1 || return 0
+  PI_DOCTOR_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" node - <<'NODE'
+const fs = require("fs");
+const path = process.env.PI_DOCTOR_AGENT_DIR;
+const providers = new Set();
+const add = (value) => {
+  if (typeof value === "string" && /^[A-Za-z0-9._-]+$/.test(value)) providers.add(value);
+};
+for (const file of ["settings.json", "auth.json"]) {
+  try {
+    const value = JSON.parse(fs.readFileSync(`${path}/${file}`, "utf8"));
+    if (file === "settings.json") add(value.defaultProvider);
+    else if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const provider of Object.keys(value)) add(provider);
+    }
+  } catch (_) {}
+}
+process.stdout.write([...providers].join("\n"));
+if (providers.size) process.stdout.write("\n");
+NODE
+}
+
+pi_report_default_selection() {
+  command -v node >/dev/null 2>&1 || { warn "pi model/default: unavailable because node is missing."; return; }
+  local selection
+  selection="$(PI_DOCTOR_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" node - <<'NODE'
+const fs = require("fs");
+try {
+  const value = JSON.parse(fs.readFileSync(`${process.env.PI_DOCTOR_AGENT_DIR}/settings.json`, "utf8"));
+  const safe = (item) => typeof item === "string" && /^[A-Za-z0-9._/-]+$/.test(item) ? item : "";
+  const provider = safe(value.defaultProvider);
+  const model = safe(value.defaultModel);
+  if (provider || model) process.stdout.write(`${provider || "unset"}/${model || "unset"}`);
+} catch (_) {}
+NODE
+)"
+  if [ -n "$selection" ]; then
+    pass "pi model/default selection: $selection"
+  else
+    warn "pi model/default: no safe default selection found."
+  fi
 }
 
 check_pi
