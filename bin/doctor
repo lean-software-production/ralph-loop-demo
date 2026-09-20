@@ -151,6 +151,19 @@ check_codex() {
 # Read only identifier fields. Never emit a credential value or inspect one.
 pi_provider_candidates() {
   if [[ "${PI_PROVIDER:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then printf '%s\n' "$PI_PROVIDER"; fi
+  # Presence only: map the common Pi API-key variables to their provider IDs.
+  # The values are never expanded into output or passed as command arguments.
+  local env_name provider_id
+  while IFS=: read -r env_name provider_id; do
+    [ -n "$env_name" ] || continue
+    if [ -n "${!env_name:-}" ]; then printf '%s\n' "$provider_id"; fi
+  done <<'EOF'
+ANTHROPIC_API_KEY:anthropic
+OPENAI_API_KEY:openai
+GEMINI_API_KEY:google
+XAI_API_KEY:xai
+OPENROUTER_API_KEY:openrouter
+EOF
   command -v node >/dev/null 2>&1 || return 0
   PI_DOCTOR_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" node - <<'NODE'
 const fs = require("fs");

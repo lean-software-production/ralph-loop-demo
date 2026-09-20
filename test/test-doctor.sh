@@ -5,7 +5,7 @@ repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test_tmp=$(mktemp -d)
 trap 'rm -rf "$test_tmp"' EXIT
 mkdir -p "$test_tmp/bin" "$test_tmp/home/.pi/agent"
-printf '{"pi-test":{"type":"api_key"}}' > "$test_tmp/home/.pi/agent/auth.json"
+printf '{}' > "$test_tmp/home/.pi/agent/auth.json"
 export PI_PROVIDER=pi-test
 test_path="$test_tmp/bin:/usr/bin:/bin"
 
@@ -57,7 +57,17 @@ if env -u PI_PROVIDER PATH="$test_tmp/agent-bin:$PATH" HOME="$test_tmp/home" NO_
   echo 'indeterminate Pi configuration unexpectedly succeeded' >&2
   exit 1
 fi
-printf '{"pi-test":{"type":"api_key"}}' > "$test_tmp/home/.pi/agent/auth.json"
+printf '{}' > "$test_tmp/home/.pi/agent/auth.json"
+
+# An API-key-only Pi setup has no settings or auth-file provider to inspect.
+env -u PI_PROVIDER -u OPENAI_API_KEY -u GEMINI_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY \
+  PATH="$test_tmp/agent-bin:$PATH" HOME="$test_tmp/home" NO_COLOR=1 PI_STUB_AUTH=ready \
+  ANTHROPIC_API_KEY='doctor-secret-must-not-appear' "$repo_root/bin/doctor" --agent pi > "$test_tmp/env-only.out"
+grep -F 'PASS pi authentication verified for provider anthropic' "$test_tmp/env-only.out" >/dev/null
+if grep -F 'doctor-secret-must-not-appear' "$test_tmp/env-only.out" >/dev/null; then
+  echo 'doctor leaked an API-key environment value' >&2
+  exit 1
+fi
 
 if PATH="$test_path" HOME="$test_tmp/home" NO_COLOR=1 PI_STUB_AUTH=stale "$repo_root/bin/doctor" --agent pi >/dev/null 2>&1; then
   echo 'stale Pi authentication unexpectedly succeeded' >&2
