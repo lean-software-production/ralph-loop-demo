@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# Read-only readiness check for the Ralph-loop exercise. It never sends a model prompt.
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage: bin/doctor [--agent pi|claude|codex|all] [--no-color]
+
+Checks local tools, repository files, installed coding CLIs, and non-secret
+authentication/configuration indicators. No model call is made. The default
+reports every agent and succeeds when the base checks pass and at least one
+agent is configured. Selecting an agent requires that agent; `all` requires all.
+EOF
+}
+
+selected="all-default"
+no_color=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --agent)
+      [ "$#" -ge 2 ] || { echo "doctor: --agent needs a value" >&2; exit 2; }
+      selected="$2"
+      shift 2
+      ;;
+    --no-color)
+      no_color=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "doctor: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$selected" in pi|claude|codex|all|all-default) ;; *)
+  echo "doctor: --agent must be pi, claude, codex, or all" >&2; exit 2;; esac
+
+if [ "$no_color" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+  pass_style='\033[32m'; warn_style='\033[33m'; fail_style='\033[31m'; reset='\033[0m'
+else
+  pass_style=''; warn_style=''; fail_style=''; reset=''
+fi
+
+pass() { printf "${pass_style}PASS${reset} %s\n" "$*"; }
+warn() { printf "${warn_style}WARN${reset} %s\n" "$*"; }
+fail() { printf "${fail_style}FAIL${reset} %s\n" "$*"; base_failed=1; }
+
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+base_failed=0
+configured_agents=""
+
+check_command() {
+  local command_name="$1"
+  if command -v "$command_name" >/dev/null 2>&1; then
+    pass "$command_name is installed"
+  else
+    fail "$command_name is missing. Install it, then rerun bin/doctor."
+  fi
+}
+
+printf 'Ralph-loop readiness (read-only; no model call)\n'
+if [ "$(id -u)" -eq 0 ]; then
+  warn "running as root. Authenticate and run the exercise as the non-root container user."
+else
+  pass "running as non-root user $(id -un)"
+fi
+
+check_command node
+check_command npm
+check_command git
+for required_file in prompt.md spec.md ralph.sh; do
+  if [ -r "$repo_root/$required_file" ]; then
+    pass "repository file present: $required_file"
+  else
+    fail "repository file missing or unreadable: $required_file"
+  fi
+done
+if [ -x "$repo_root/ralph.sh" ]; then
+  pass "exercise script is executable"
+else
+  fail "ralph.sh must be executable"
+fi
+
+record_configured() { configured_agents="${configured_agents} $1"; }
+
+check_pi() {
+  if ! command -v pi >/dev/null 2>&1; then
+    fail "pi is missing. Rebuild the Dev Container; this repository requires all three agent CLIs."
+    return
+  fi
+  pass "pi installed ($(pi --version 2>/dev/null || echo version-unavailable))"
+  local provider provider_found=0 ready=0
+  while IFS= read -r provider; do
+    [ -n "$provider" ] || continue
+    provider_found=1
+    if pi auth check --provider "$provider" --json --no-refresh >/dev/null 2>&1; then
+      pass "pi authentication verified for provider $provider"
+      ready=1
+    else
+      warn "pi provider $provider is not ready (stale, invalid, or unavailable); run pi and /login."
+    fi
+  done < <(pi_provider_candidates)
+  if [ "$provider_found" -eq 0 ]; then
+    warn "pi has no safely discoverable provider selection. Run pi and /login, then choose a model."
+  elif [ "$ready" -eq 1 ]; then
+    record_configured pi
+  else
+    warn "pi is not configured with a usable provider. Run pi and /login."
+  fi
+  pi_report_default_selection
+}
+
+check_claude() {
+  if ! command -v claude >/dev/null 2>&1; then
+    fail "claude is missing. Rebuild the Dev Container; this repository requires all three agent CLIs."
+    return
+  fi
+  pass "claude installed ($(claude --version 2>/dev/null || echo version-unavailable))"
+  if claude auth status >/dev/null 2>&1; then
+    pass "claude authentication verified with claude auth status"
+    record_configured claude
+  else
+    warn "claude is not configured or its authentication is not usable. Run claude auth login as this user."
+  fi
+  warn "claude model/default: not queried; no repository model is configured."
+}
+
+check_codex() {
+  if ! command -v codex >/dev/null 2>&1; then
+    fail "codex is missing. Rebuild the Dev Container; this repository requires all three agent CLIs."
+    return
+  fi
+  pass "codex installed ($(codex --version 2>/dev/null || echo version-unavailable))"
+  if [ -n "${OPENAI_FEDERATION_RULE_ID:-}" ] || [ -n "${OPENAI_IDENTITY_TOKEN_FILE:-}" ]; then
+    warn "codex workload identity is present; login status is skipped because it can exchange a token."
+  elif codex login status >/dev/null 2>&1; then
+    pass "codex authentication verified with codex login status"
+    record_configured codex
+  else
+    warn "codex is not configured. Run codex login --device-auth in a remote container."
+  fi
+  warn "codex model/default: not queried; no repository model is configured."
+}
+
+# Read only identifier fields. Never emit a credential value or inspect one.
+pi_provider_candidates() {
+  if [[ "${PI_PROVIDER:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then printf '%s\n' "$PI_PROVIDER"; fi
+  # Presence only: map the common Pi API-key variables to their provider IDs.
+  # The values are never expanded into output or passed as command arguments.
+  local env_name provider_id
+  while IFS=: read -r env_name provider_id; do
+    [ -n "$env_name" ] || continue
+    if [ -n "${!env_name:-}" ]; then printf '%s\n' "$provider_id"; fi
+  done <<'EOF'
+ANTHROPIC_API_KEY:anthropic
+OPENAI_API_KEY:openai
+GEMINI_API_KEY:google
+XAI_API_KEY:xai
+OPENROUTER_API_KEY:openrouter
+EOF
+  command -v node >/dev/null 2>&1 || return 0
+  PI_DOCTOR_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" node - <<'NODE'
+const fs = require("fs");
+const path = process.env.PI_DOCTOR_AGENT_DIR;
+const providers = new Set();
+const add = (value) => {
+  if (typeof value === "string" && /^[A-Za-z0-9._-]+$/.test(value)) providers.add(value);
+};
+for (const file of ["settings.json", "auth.json"]) {
+  try {
+    const value = JSON.parse(fs.readFileSync(`${path}/${file}`, "utf8"));
+    if (file === "settings.json") add(value.defaultProvider);
+    else if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const provider of Object.keys(value)) add(provider);
+    }
+  } catch (_) {}
+}
+process.stdout.write([...providers].join("\n"));
+if (providers.size) process.stdout.write("\n");
+NODE
+}
+
+pi_report_default_selection() {
+  command -v node >/dev/null 2>&1 || { warn "pi model/default: unavailable because node is missing."; return; }
+  local selection
+  selection="$(PI_DOCTOR_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" node - <<'NODE'
+const fs = require("fs");
+try {
+  const value = JSON.parse(fs.readFileSync(`${process.env.PI_DOCTOR_AGENT_DIR}/settings.json`, "utf8"));
+  const safe = (item) => typeof item === "string" && /^[A-Za-z0-9._/-]+$/.test(item) ? item : "";
+  const provider = safe(value.defaultProvider);
+  const model = safe(value.defaultModel);
+  if (provider || model) process.stdout.write(`${provider || "unset"}/${model || "unset"}`);
+} catch (_) {}
+NODE
+)"
+  if [ -n "$selection" ]; then
+    pass "pi model/default selection: $selection"
+  else
+    warn "pi model/default: no safe default selection found."
+  fi
+}
+
+check_pi
+check_claude
+check_codex
+
+configured_count=0
+for agent in $configured_agents; do configured_count=$((configured_count + 1)); done
+
+required_configured=0
+case "$selected" in
+  pi|claude|codex)
+    for agent in $configured_agents; do [ "$agent" = "$selected" ] && required_configured=1; done
+    ;;
+  all)
+    [ "$configured_count" -eq 3 ] && required_configured=1
+    ;;
+  all-default)
+    [ "$configured_count" -ge 1 ] && required_configured=1
+    ;;
+esac
+
+if [ "$required_configured" -eq 1 ] && [ "$base_failed" -eq 0 ]; then
+  pass "ready: selected requirement is configured"
+  exit 0
+fi
+
+if [ "$base_failed" -ne 0 ]; then
+  printf 'FAIL base readiness failed; fix the failures above.\n' >&2
+else
+  case "$selected" in
+    all-default) printf 'FAIL no configured agent. Authenticate Pi, Claude Code, or Codex, then rerun bin/doctor.\n' >&2 ;;
+    all) printf 'FAIL --agent all requires Pi, Claude Code, and Codex to be configured.\n' >&2 ;;
+    *) printf 'FAIL --agent %s requires that agent to be configured.\n' "$selected" >&2 ;;
+  esac
+fi
+exit 1
