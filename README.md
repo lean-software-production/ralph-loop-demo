@@ -7,7 +7,9 @@ fixed-size loop, so it builds a project from a spec one task at a time.
 ## Open it in a Dev Container or Codespace
 
 The repository's [Dev Container](.devcontainer/devcontainer.json) uses Node.js
-24 and installs Pi, Claude Code, and Codex. It contains no credentials.
+24 and installs Pi, Claude Code, and Codex. It also installs the optional
+[OpenAI Codex VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt)
+in the container extension host. It contains no credentials.
 
 - **GitHub Codespaces:** use **Code → Create codespace on main**, then open an
   integrated terminal after creation.
