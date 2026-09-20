@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Read-only readiness check for the Ralph-loop exercise. It never sends a model prompt.
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage: bin/doctor [--agent pi|claude|codex|all] [--no-color]
+
+Checks local tools, repository files, installed coding CLIs, and non-secret
+authentication/configuration indicators. No model call is made. The default
+reports every agent and succeeds when the base checks pass and at least one
+agent is configured. Selecting an agent requires that agent; `all` requires all.
+EOF
+}
+
+selected="all-default"
+no_color=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --agent)
+      [ "$#" -ge 2 ] || { echo "doctor: --agent needs a value" >&2; exit 2; }
+      selected="$2"
+      shift 2
+      ;;
+    --no-color)
+      no_color=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "doctor: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$selected" in pi|claude|codex|all|all-default) ;; *)
+  echo "doctor: --agent must be pi, claude, codex, or all" >&2; exit 2;; esac
+
+if [ "$no_color" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+  pass_style='\033[32m'; warn_style='\033[33m'; fail_style='\033[31m'; reset='\033[0m'
+else
+  pass_style=''; warn_style=''; fail_style=''; reset=''
+fi
+
+pass() { printf "${pass_style}PASS${reset} %s\n" "$*"; }
+warn() { printf "${warn_style}WARN${reset} %s\n" "$*"; }
+fail() { printf "${fail_style}FAIL${reset} %s\n" "$*"; base_failed=1; }
+
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+base_failed=0
+configured_agents=""
+
+check_command() {
+  local command_name="$1"
+  if command -v "$command_name" >/dev/null 2>&1; then
+    pass "$command_name is installed"
+  else
+    fail "$command_name is missing. Install it, then rerun bin/doctor."
+  fi
+}
+
+printf 'Ralph-loop readiness (read-only; no model call)\n'
+if [ "$(id -u)" -eq 0 ]; then
+  warn "running as root. Authenticate and run the exercise as the non-root container user."
+else
+  pass "running as non-root user $(id -un)"
+fi
+
+check_command node
+check_command npm
+check_command git
+for required_file in prompt.md spec.md ralph.sh bin/run-agent; do
+  if [ -r "$repo_root/$required_file" ]; then
+    pass "repository file present: $required_file"
+  else
+    fail "repository file missing or unreadable: $required_file"
+  fi
+done
+if [ -x "$repo_root/ralph.sh" ] && [ -x "$repo_root/bin/run-agent" ]; then
+  pass "exercise scripts are executable"
+else
+  fail "ralph.sh and bin/run-agent must be executable"
+fi
+
+agent_requested() {
+  [ "$selected" = all-default ] || [ "$selected" = all ] || [ "$selected" = "$1" ]
+}
+
+record_configured() { configured_agents="${configured_agents} $1"; }
+
+check_pi() {
+  if ! command -v pi >/dev/null 2>&1; then
+    if agent_requested pi; then warn "pi is not installed. Rebuild the Dev Container or install Pi."; fi
+    return
+  fi
+  pass "pi installed ($(pi --version 2>/dev/null || echo version-unavailable))"
+  if [ -r "$HOME/.pi/agent/auth.json" ]; then
+    pass "pi configuration detected (credential file present; contents not read)"
+    record_configured pi
+  else
+    warn "pi is not configured. Run pi, then /login, as this user."
+  fi
+  warn "pi model/default: not queried; confirm it in Pi's interactive model picker."
+}
+
+check_claude() {
+  if ! command -v claude >/dev/null 2>&1; then
+    if agent_requested claude; then warn "claude is not installed. Rebuild the Dev Container or install Claude Code."; fi
+    return
+  fi
+  pass "claude installed ($(claude --version 2>/dev/null || echo version-unavailable))"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -r "$HOME/.claude.json" ]; then
+    pass "claude configuration detected (credential value not read)"
+    record_configured claude
+  else
+    warn "claude is not configured. Run claude and complete sign-in as this user."
+  fi
+  warn "claude model/default: not queried; no repository model is configured."
+}
+
+check_codex() {
+  if ! command -v codex >/dev/null 2>&1; then
+    if agent_requested codex; then warn "codex is not installed. Rebuild the Dev Container or install Codex."; fi
+    return
+  fi
+  pass "codex installed ($(codex --version 2>/dev/null || echo version-unavailable))"
+  if [ -n "${OPENAI_FEDERATION_RULE_ID:-}" ] || [ -n "${OPENAI_IDENTITY_TOKEN_FILE:-}" ]; then
+    warn "codex workload identity is present; login status is skipped because it can exchange a token."
+  elif codex login status >/dev/null 2>&1; then
+    pass "codex authentication verified with codex login status"
+    record_configured codex
+  else
+    warn "codex is not configured. Run codex login --device-auth in a remote container."
+  fi
+  warn "codex model/default: not queried; no repository model is configured."
+}
+
+check_pi
+check_claude
+check_codex
+
+configured_count=0
+for agent in $configured_agents; do configured_count=$((configured_count + 1)); done
+
+required_configured=0
+case "$selected" in
+  pi|claude|codex)
+    for agent in $configured_agents; do [ "$agent" = "$selected" ] && required_configured=1; done
+    ;;
+  all)
+    [ "$configured_count" -eq 3 ] && required_configured=1
+    ;;
+  all-default)
+    [ "$configured_count" -ge 1 ] && required_configured=1
+    ;;
+esac
+
+if [ "$required_configured" -eq 1 ] && [ "$base_failed" -eq 0 ]; then
+  pass "ready: selected requirement is configured"
+  exit 0
+fi
+
+if [ "$base_failed" -ne 0 ]; then
+  printf 'FAIL base readiness failed; fix the failures above.\n' >&2
+else
+  case "$selected" in
+    all-default) printf 'FAIL no configured agent. Authenticate Pi, Claude Code, or Codex, then rerun bin/doctor.\n' >&2 ;;
+    all) printf 'FAIL --agent all requires Pi, Claude Code, and Codex to be configured.\n' >&2 ;;
+    *) printf 'FAIL --agent %s requires that agent to be configured.\n' "$selected" >&2 ;;
+  esac
+fi
+exit 1
