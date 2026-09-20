@@ -74,17 +74,17 @@ fi
 check_command node
 check_command npm
 check_command git
-for required_file in prompt.md spec.md ralph.sh bin/run-agent; do
+for required_file in prompt.md spec.md ralph.sh; do
   if [ -r "$repo_root/$required_file" ]; then
     pass "repository file present: $required_file"
   else
     fail "repository file missing or unreadable: $required_file"
   fi
 done
-if [ -x "$repo_root/ralph.sh" ] && [ -x "$repo_root/bin/run-agent" ]; then
-  pass "exercise scripts are executable"
+if [ -x "$repo_root/ralph.sh" ]; then
+  pass "exercise script is executable"
 else
-  fail "ralph.sh and bin/run-agent must be executable"
+  fail "ralph.sh must be executable"
 fi
 
 record_configured() { configured_agents="${configured_agents} $1"; }
